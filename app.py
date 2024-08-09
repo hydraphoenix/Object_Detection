@@ -1,3 +1,5 @@
+pip install numpy==1.18.0  # Or a newer, compatible version
+pip install cython==0.29.13  # Replace with the correct version if needed
 pip install --upgrade pip
 import streamlit as st
 
