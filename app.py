@@ -1,15 +1,18 @@
-import tensorflow as tf
-import matplotlib.pyplot as plt
-import os
-from PIL import Image
-import argparse
+import streamlit as st
+
 import numpy as np
-from keras.layers import Conv2D, Input, BatchNormalization, LeakyReLU, ZeroPadding2D, UpSampling2D
-from keras.layers import concatenate, add
-from keras.models import Model
-import struct
-import cv2
+import tempfile
+
+import colorsys
 from copy import deepcopy
+import time
+
+from PIL import Image
+from PIL import ImageDraw, ImageFont
+import cv2
+
+import tensorflow as tf
+from tensorflow.python.ops.gen_resource_variable_ops import var_is_initialized_op_eager_fallback
 
 st.set_page_config(page_title="Object Detection", page_icon="🚥", layout='centered', initial_sidebar_state="expanded") # Config
 
@@ -41,16 +44,10 @@ def preprocess_input(image_pil, net_h, net_w):
 
     return new_image
 
-anchors = [[[116,90], [156,198], [373,326]], [[30,61], [62,45], [59,119]], [[10,13], [16,30], [33,23]]]
+anchors = [[[116,90], [156,198], [373,326]], [[30,61], [62,45], [59,119]], [[10,13], [16,30], [33,23]]] # Initial bounding box sizes
 
-DATA_ROOT = '/content/data'
-
-model_path = os.path.join(DATA_ROOT, 'yolo_weights.h5')
-
-darknet = tf.keras.models.load_model(model_path, compile=False)
-
-labels = ["person", "bicycle", "car", "motorbike", "aeroplane", "bus", "train", "truck", \
-              "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", \
+labels = ["human", "bicycle", "car", "motorbike", "aeroplane", "bus", "train", "truck", \
+              "boat", "traffic-light", "fire hydrant", "stop sign", "parking meter", "bench", \
               "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", \
               "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", \
               "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", \
@@ -58,15 +55,15 @@ labels = ["person", "bicycle", "car", "motorbike", "aeroplane", "bus", "train", 
               "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", \
               "chair", "sofa", "pottedplant", "bed", "diningtable", "toilet", "tvmonitor", "laptop", "mouse", \
               "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", \
-              "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"]
+              "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"]  
 
-class BoundBox:
+class BoundBox: # Bounding bax structure
     def __init__(self, xmin, ymin, xmax, ymax, objness = None, classes = None):
         self.xmin = xmin
         self.ymin = ymin
         self.xmax = xmax
         self.ymax = ymax
-
+        
         self.objness = objness
         self.classes = classes
 
@@ -76,13 +73,13 @@ class BoundBox:
     def get_label(self):
         if self.label == -1:
             self.label = np.argmax(self.classes)
-
+        
         return self.label
-
+    
     def get_score(self):
         if self.score == -1:
             self.score = self.classes[self.get_label()]
-
+            
         return self.score
 
 def _interval_overlap(interval_a, interval_b):
@@ -98,49 +95,23 @@ def _interval_overlap(interval_a, interval_b):
         if x2 < x3:
              return 0
         else:
-            return min(x2,x4) - x3
+            return min(x2,x4) - x3          
 
-def _sigmoid(x):
+def _sigmoid(x): # Processing function
     return 1. / (1. + np.exp(-x))
 
 def bbox_iou(box1, box2):
     intersect_w = _interval_overlap([box1.xmin, box1.xmax], [box2.xmin, box2.xmax])
     intersect_h = _interval_overlap([box1.ymin, box1.ymax], [box2.ymin, box2.ymax])
-
+    
     intersect = intersect_w * intersect_h
 
     w1, h1 = box1.xmax-box1.xmin, box1.ymax-box1.ymin
     w2, h2 = box2.xmax-box2.xmin, box2.ymax-box2.ymin
-
+    
     union = w1*h1 + w2*h2 - intersect
-
+    
     return float(intersect) / union
-
-def preprocess_input(image_pil, net_h, net_w):
-    image = np.asarray(image_pil)
-    # Remove the alpha channel if it exists
-    if image.shape[2] == 4:
-        image = image[:, :, :3]
-
-    new_h, new_w, _ = image.shape
-    if (float(net_w)/new_w) < (float(net_h)/new_h):
-        new_h = (new_h * net_w)/new_w
-        new_w = net_w
-    else:
-        new_w = (new_w * net_h)/new_h
-        new_h = net_h
-
-    new_w = int(new_w)
-    new_h = int(new_h)
-
-    resized = cv2.resize(image/255., (int(new_w), int(new_h)))
-
-    new_image = np.ones((net_h, net_w, 3)) * 0.5
-    new_image[int((net_h-new_h)//2):int((net_h+new_h)//2), int((net_w-new_w)//2):int((net_w+new_w)//2), :] = resized
-    new_image = np.expand_dims(new_image, 0)
-
-    return new_image
-
 
 def decode_netout(netout_, obj_thresh, anchors_, image_h, image_w, net_h, net_w):
     netout_all = deepcopy(netout_)
@@ -164,26 +135,25 @@ def decode_netout(netout_, obj_thresh, anchors_, image_h, image_w, net_h, net_w)
       for i in range(grid_h*grid_w):
           row = i // grid_w
           col = i % grid_w
-
+          
           for b in range(nb_box):
               # 4th element is objectness score
               objectness = netout[row][col][b][4]
               #objectness = netout[..., :4]
               # last elements are class probabilities
               classes = netout[row][col][b][5:]
-
+              
               if((classes <= obj_thresh).all()): continue
-
+              
               # first 4 elements are x, y, w, and h
               x, y, w, h = netout[row][col][b][:4]
 
               x = (col + x) / grid_w # center position, unit: image width
               y = (row + y) / grid_h # center position, unit: image height
               w = anchors[b][0] * np.exp(w) / net_w # unit: image width
-              h = anchors[b][1] * np.exp(h) / net_h # unit: image height
-
+              h = anchors[b][1] * np.exp(h) / net_h # unit: image height  
+            
               box = BoundBox(x-w/2, y-h/2, x+w/2, y+h/2, objectness, classes)
-              #box = BoundBox(x-w/2, y-h/2, x+w/2, y+h/2, None, classes)
 
               boxes.append(box)
 
@@ -191,7 +161,7 @@ def decode_netout(netout_, obj_thresh, anchors_, image_h, image_w, net_h, net_w)
 
     # Correct boxes
     boxes_all = correct_yolo_boxes(boxes_all, image_h, image_w, net_h, net_w)
-
+    
     return boxes_all
 
 def correct_yolo_boxes(boxes_, image_h, image_w, net_h, net_w):
@@ -202,24 +172,24 @@ def correct_yolo_boxes(boxes_, image_h, image_w, net_h, net_w):
     else:
         new_h = net_w
         new_w = (image_w*net_h)/image_h
-
+        
     for i in range(len(boxes)):
         x_offset, x_scale = (net_w - new_w)/2./net_w, float(new_w)/net_w
         y_offset, y_scale = (net_h - new_h)/2./net_h, float(new_h)/net_h
-
+        
         boxes[i].xmin = int((boxes[i].xmin - x_offset) / x_scale * image_w)
         boxes[i].xmax = int((boxes[i].xmax - x_offset) / x_scale * image_w)
         boxes[i].ymin = int((boxes[i].ymin - y_offset) / y_scale * image_h)
         boxes[i].ymax = int((boxes[i].ymax - y_offset) / y_scale * image_h)
     return boxes
-
+        
 def do_nms(boxes_, nms_thresh, obj_thresh):
     boxes = deepcopy(boxes_)
     if len(boxes) > 0:
         num_class = len(boxes[0].classes)
     else:
         return
-
+        
     for c in range(num_class):
         sorted_indices = np.argsort([-box.classes[c] for box in boxes])
 
@@ -237,43 +207,40 @@ def do_nms(boxes_, nms_thresh, obj_thresh):
     new_boxes = []
     for box in boxes:
         label = -1
-
+        
         for i in range(num_class):
             if box.classes[i] > obj_thresh:
                 label = i
                 # print("{}: {}, ({}, {})".format(labels[i], box.classes[i]*100, box.xmin, box.ymin))
                 box.label = label
                 box.score = box.classes[i]
-                new_boxes.append(box)
+                new_boxes.append(box)    
 
     return new_boxes
 
-
-from PIL import ImageDraw, ImageFont
-import colorsys
-
-def draw_boxes(image_, boxes, labels):
+def draw_boxes(image_, boxes, labels, video=False):
     image = image_.copy()
     image_w, image_h = image.size
-   objects_found = []
+    # font = ImageFont.truetype(font='/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
+    #                 size=np.floor(3e-2 * image_h + 0.5).astype('int32'))
+
+    objects_found = []
 
     font = ImageFont.truetype("models/arial.ttf", 20)
 
     thickness = (image_w + image_h) // 300
 
-    # Generate colors for drawing bounding boxes.
     hsv_tuples = [(x / len(labels), 1., 1.)
                   for x in range(len(labels))]
     colors = list(map(lambda x: colorsys.hsv_to_rgb(*x), hsv_tuples))
     colors = list(
         map(lambda x: (int(x[0] * 255), int(x[1] * 255), int(x[2] * 255)), colors))
-    np.random.seed(10101)  # Fixed seed for consistent colors across runs.
-    np.random.shuffle(colors)  # Shuffle colors to decorrelate adjacent classes.
-    np.random.seed(None)  # Reset seed to default.
+    np.random.seed(10101)  
+    np.random.shuffle(colors)  
+    np.random.seed(None)  
 
-if boxes == None:
+    if boxes == None:
         return image, []
-
     for i, box in reversed(list(enumerate(boxes))):
         c = box.get_label()
         predicted_class = labels[c]
