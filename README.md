@@ -21,4 +21,4 @@ Each boundary box has a confidence score representing how accurate it assumes a 
 The YoloV3 model contains a total of 252 layers and 62,001,757 parameters.
 
 # Accolades
-**1st place** in Inspirit AI's project fair (recognized by industry professonials from Stanford, MIT, and Harvard)
+Inspirit AI's project fair (recognized by industry professonials from Stanford, MIT, and Harvard)
